@@ -1,0 +1,190 @@
+//
+//
+//  Google Sheets Sync w/ Trello Data
+//
+//
+//-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-
+
+// adds button to Menu bar
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('API Menu')
+      .addItem('Load Data','loadData')
+      .addToUi();
+  //loadData();
+}
+
+
+
+function loadData() {
+  // Spacing
+  var fromTop = 1;  // blank cells above - current: 1 "top"
+  var height = 25;  // cell height
+  
+  // Board access information
+  var board = '54ab339ee8e7ddb91a778d68';                            // Identifies correct board "GW Keg Inventory"
+  var list = '54ab33ba0fd047932d812777';                             // Indicates "Kegs on Tap" list of cards
+  var key = 'xxx';                      // << -- Provides access to private data
+  var token = 'xxx';
+  
+  // Create URL variable      ex:https://api.trello.com/1/boards/54ab339ee8e7ddb91a778d68/cards?key=a211f4aca7fb3e521d652730dd231cb6&token=ae6ebe60b45abcd2d4aa945c9ab4c4571bd6b6f7856b1df0cd387fbffc649579
+  var url = 'https://api.trello.com/1/boards/'.concat(board, '/cards/?customFieldItems=true', '&key=', key, '&token=', token);
+  Logger.log(url);
+  
+  // Call to Trello board API
+  var response = UrlFetchApp.fetch(url); 
+  
+  // Parse JSON reply
+  var json = response.getContentText();
+  var data = JSON.parse(json); 
+  
+  // var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = SpreadsheetApp.getActiveSheet();
+  //sheet.getRange(1,1).setValue([json]); // write what is stored in json variable
+  var output = [];
+  // Which fields to be displayed in excel
+  var display = [
+         "By",
+         "name",
+         "Price",
+         "Glass",
+         "%ABV",
+         "Growler",
+         "From",
+         "Type",
+         "shortUrl"
+        // "%",
+  ];        // Determines which fields to display...needed if not all filled
+  
+  // Titles at top of display
+  output.push(display);
+  
+  // Array of Custom Field objects available to entire board
+  // Correct lookup syntax: data[*fieldkey*] or data[*field index*].options[*selection key*]
+  var bCustoms = Customs(board,key,token);
+
+  // Examine each card on board
+  data.forEach(function(card) {           
+    // Only analyze card if from correct list (Keg's On Tap)
+    if (card["idList"] == list) {    
+      // Explores custom fields included on each card to display
+      var cCustoms = card["customFieldItems"];
+      cCustoms.forEach(function(cField) {
+        var idF = cField.idCustomField;
+        var idV = cField.idValue;
+        var bField = find(bCustoms, 'id', idF);
+        //var bF = bCustoms.find(var x; x.id == idV);
+        var key = bField.name;
+        var value;
+        if (bField.type == "list") {
+          var options = bField.options;
+          value = find(options, 'id', idV).value.text;
+        } else if (bField.type == "checkbox") {
+          value = true;
+        } else if (bField.type !== 'undefined') {
+          value = cField.value[bField.type]; 
+        }
+        card[key] = value;
+      });
+      // Calculates the proper data and updates parameters of cards
+      calculate(card);
+      //  Make an array of all the card data to display and push to output array
+      var cardInfo = [];
+      display.forEach(function(col, i) {
+        cardInfo[i] = card[col];
+      });
+      output.push(cardInfo);      
+    }
+  });
+    
+  // Clear previous content
+  sheet.getRange(fromTop,2,800,6).clearContent();   // unecessary?
+  // Paste current values
+  sheet.getRange(fromTop,2,output.length,display.length).setValues(output);  // last integer value represents number of colums, determined by number of fields in 'output' array
+}
+
+
+
+// Calculates and adjusts card parameters
+function calculate(card) {
+  
+
+  
+  // Price  ----------
+  card.Oz = 660;
+  // translate keg size to oz  ----- Switch To Metric??
+  if (card["Keg Size"] == "1/6 BBL" || card["Keg Size"] == "20 Liter") {   // card.oz = keg ounces
+    card.Oz = 660;
+  } else if (card["Keg Size"] == "1/4 BBL") {
+    card.Oz = 980;
+  } else if (card["Keg Size"] == "1/2 BBL" || card["Keg Size"] == "50 Liter") {
+    card.Oz = 1690; // or 1984
+  }
+  card.CostOz = card["Keg$"] / card.Oz;
+  card.PriceOz = card.CostOz / .29;                                // <------------------- determines mark-up rate --------------------------
+  if (card.Special == "Nitro") {
+    card.Glass = "16 oz";
+    card.Price = card.PriceOz * 16 + 1;
+    card.Glass = "20 oz";
+  } else {
+    card.Price = card.PriceOz * parseInt(card.Glass) + 0.5;
+  }
+  if (card.Special == "Wine") {
+    card.Price /= 2;
+  }
+  card.Price = Math.round(2*(card.Price))/2;
+  
+  // Temporary while some card fields are empty
+  if (!card["Keg Size"]) {
+    card.Price = 0;
+    card.PriceOz = 0;
+  }
+  
+  // Growler Price  --------
+  if (!card.NoGr) {
+    card.Growler = Math.round(48 * card.PriceOz);
+  } else {
+    card.Growler = "N/A";
+  } 
+  
+  // ABV  -------
+  if (!card["%ABV"] || card["%ABV"] == "0") {
+    card["%ABV"] = "N/A";
+  } else {
+    card["%ABV"] /= 100; // percentage conversion
+  }  
+}
+
+
+
+// Temp to test call Customs function
+function tempFields () {
+  var board = '54ab339ee8e7ddb91a778d68';                            // Identifies correct board
+  var key = 'a211f4aca7fb3e521d652730dd231cb6';                      // Provides access to private data
+  var token = 'ae6ebe60b45abcd2d4aa945c9ab4c4571bd6b6f7856b1df0cd387fbffc649579';
+  Customs (board,key,token);
+}
+
+
+
+// Returns board custom data information as an array of "custom field" objects
+function Customs (board,key,token) {
+  var url = 'https://api.trello.com/1/boards/'.concat(board, '/customFields?key=', key, '&token=', token); 
+  var response = UrlFetchApp.fetch(url);     // Call to Trello board API
+  var json = response.getContentText();      // Parse JSON reply
+  var data = JSON.parse(json);
+  Logger.log(url);
+  return data;
+}
+
+
+
+// Returns first object that has matching Key:Value pair from provided Array (alternate to .find() function)
+function find(array, key, value) {
+    for (var i = 0; i < array.length; i++) {
+        if (array[i][key] === value) {
+            return array[i];
+        }
+    }
+    return null;
+}
